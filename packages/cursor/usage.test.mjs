@@ -24,8 +24,13 @@ const provider = { models: Object.fromEntries([...firstParty, ...bucketed, ...ot
 async function run(a, reply) {
   const seen = []
   globalThis.fetch = async (url, init) => {
-    seen.push({ url: String(url), method: init.method, headers: init.headers, body: init.body })
-    return reply(String(url))
+    seen.push({ url: String(url), method: init.method, headers: init.headers, body: init.body, ...(init.redirect ? { redirect: init.redirect } : {}) })
+    const res = await reply(String(url))
+    if (String(url) === BOT && res.status === 307 && res.headers.has("Location")) {
+      if (init.redirect === "error") throw new TypeError("redirect refused")
+      return Response.json(paidBot)
+    }
+    return res
   }
   const hooks = await CursorAuthPlugin()
   return { u: await hooks.auth.usage(async () => a, provider), seen }
@@ -155,4 +160,57 @@ test("a model list Cursor couldn't give fails, not shrinks to the configured few
   const hooks = await CursorAuthPlugin()
   const configured = { models: { auto: { id: "auto" } } }
   await expect(hooks.provider.models(configured, { auth: fresh() })).rejects.toThrow()
+})
+
+const BOT = "https://cursor.com/api/dashboard/get-sand-usage-status"
+const botAuth = () => ({ ...fresh(), access: ["e30", Buffer.from(JSON.stringify({ sub: "auth0|user_test", exp: Math.floor(Date.now() / 1000) + 7200 + ++n })).toString("base64url"), "sig"].join(".") })
+const reset = "2030-01-08T00:00:00.000Z"
+const paidBot = { includedLimitZero: false, usagePercent: 42, nextResetTimestampUtc: reset }
+const period = { planUsage: { autoPercentUsed: 12, apiPercentUsed: 34, totalPercentUsed: 20 } }
+const botRun = (data, monthly = period, account = botAuth()) => run(account, (url) => {
+  if (url === PLAN) return Response.json({})
+  if (url === BOT) {
+    if (data instanceof Error) throw data
+    return data instanceof Response ? data : Response.json(data)
+  }
+  return Response.json(monthly)
+})
+
+test("Bot uses the dashboard session and appears before Total without gating Cursor models", async () => {
+  const a = botAuth()
+  const { u, seen } = await botRun(paidBot, period, a)
+  expect(u.windows.map((w) => w.name)).toEqual(["Cursor Models", "Other Models", "Grok Bot", "Total"])
+  expect(u.windows[2]).toEqual({ name: "Grok Bot", used: 42, aside: true, resetsAt: reset, span: 604800 })
+  expect(seen.find((r) => r.url === BOT)).toMatchObject({ method: "POST", body: "{}", headers: { Cookie: "WorkosCursorSessionToken=" + encodeURIComponent("user_test::" + a.access) } })
+})
+
+test("Bot grants work without Cursor monthly usage, with current or legacy allowance flags", async () => {
+  expect((await botRun({ ...paidBot, hasNonZeroIncludedLimit: false }, {})).u.windows).toEqual([
+    { name: "Grok Bot", used: 42, aside: true, resetsAt: reset, span: 604800 },
+  ])
+  expect((await botRun({ hasNonZeroIncludedLimit: true, usagePercent: 0 }, {})).u.windows).toEqual([{ name: "Grok Bot", used: 0, aside: true }])
+})
+
+test("an exhausted trial stays visible, without treating expiry as a reset", async () => {
+  const trial = { includedLimitZero: true, sandTrialExpiresAt: "2099-01-01T00:00:00Z", usagePercent: 100, nextResetTimestampUtc: reset }
+  expect((await botRun(trial)).u.windows[2]).toEqual({ name: "Grok Bot (trial)", used: 100, aside: true })
+  expect((await botRun({ ...trial, sandTrialExpiresAt: "2000-01-01T00:00:00Z" })).u.windows.map((w) => w.name)).toEqual(["Cursor Models", "Other Models", "Total"])
+})
+
+test("absent or failed Bot readings preserve Cursor usage and sign-in", async () => {
+  const normal = (await run(fresh(), (url) => Response.json(url === PLAN ? {} : period))).u
+  for (const data of [null, {}, { ...paidBot, includedLimitZero: true, hasNonZeroIncludedLimit: true }, { ...paidBot, usagePercent: null }, new Response("", { status: 403 }), new Response("not JSON"), new Error("network unavailable")])
+    expect((await botRun(data)).u).toEqual(normal)
+})
+
+test("Bot usage is clamped", async () => {
+  for (const [usagePercent, used] of [[130, 100], [-5, 0]])
+    expect((await botRun({ ...paidBot, usagePercent })).u.windows[2]).toEqual({ name: "Grok Bot", used, aside: true, resetsAt: reset, span: 604800 })
+})
+
+test("Bot login redirects are refused", async () => {
+  const normal = (await run(botAuth(), (url) => Response.json(url === PLAN ? {} : period))).u
+  const { u, seen } = await botRun(new Response(null, { status: 307, headers: { Location: "https://cursor.com/login?returnTo=dashboard" } }))
+  expect(u).toEqual(normal)
+  expect(seen.find((r) => r.url === BOT)).toMatchObject({ redirect: "error" })
 })

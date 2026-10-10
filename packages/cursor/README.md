@@ -124,9 +124,19 @@ minutes), the way pi-cursor-sdk lists Cursor's catalog:
   and `service_tier` counting as for a listed model. The list doesn't show
   these ids: pick the `@<size>` model for a window that is the model's.
 
+## Usage
+
+magpie shows Cursor Models, Other Models and Total for the billing period.
+Accounts with a Grok Bot allowance also show its usage and reset time;
+active trials are labelled separately. A spent Bot allowance doesn't stop
+Cursor requests.
+
+Sign in to the Cursor account linked in Grok Bot. A linked SuperGrok
+subscription grants Bot access without a paid Cursor plan; see
+[Grok Bot plans and billing](https://cursor.com/help/grok-bot/plans).
+
 ## Not included
 
-- Usage and plan limits.
 - Web search: Cursor's own web search is refused like its other tools.
 - Switching between several accounts. OpenCode keeps one sign-in per
   provider.

@@ -87,3 +87,7 @@ read 0% used while its requests come back 429. After a 429 the card shows
 a spent "Rate limit" window until the reset it named (`Retry-After`, or a
 `*ratelimit*reset*` header). When it named none, the window stays until a
 request goes through, or for 5 minutes.
+
+Grok Bot's separate allowance is shown by the [Cursor plugin](../cursor/README.md#usage).
+Sign in there with the Cursor account linked in Grok Bot, including for
+access through SuperGrok.

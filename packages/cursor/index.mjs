@@ -422,6 +422,43 @@ async function usage(tok, ids) {
   }
 }
 
+// Grok Bot's separate allowance, using the CLI JWT as a dashboard session.
+async function botUsage(tok) {
+  try {
+    const subject = JSON.parse(Buffer.from(tok.split(".")[1], "base64url").toString()).sub
+    if (typeof subject !== "string") return []
+    const user = subject.split("|").filter(Boolean).at(-1)
+    if (!user || !/^[a-zA-Z0-9._-]+$/.test(user)) return []
+    const res = await fetch(WEBSITE + "/api/dashboard/get-sand-usage-status", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        Origin: WEBSITE,
+        Cookie: "WorkosCursorSessionToken=" + encodeURIComponent(user + "::" + tok),
+      },
+      body: "{}",
+      redirect: "error",
+      signal: AbortSignal.timeout(5_000),
+    })
+    if (!res.ok) return []
+    const data = await res.json()
+    const paid = typeof data?.includedLimitZero === "boolean"
+      ? !data.includedLimitZero : data?.hasNonZeroIncludedLimit === true
+    const trial = !paid && typeof data?.sandTrialExpiresAt === "string" && Date.parse(data.sandTrialExpiresAt) > Date.now()
+    if ((!paid && !trial) || typeof data?.usagePercent !== "number" || !Number.isFinite(data.usagePercent)) return []
+    const reset = paid && typeof data.nextResetTimestampUtc === "string" ? Date.parse(data.nextResetTimestampUtc) : NaN
+    return [{
+      name: trial ? "Grok Bot (trial)" : "Grok Bot",
+      used: Math.max(0, Math.min(100, data.usagePercent)),
+      aside: true, // Bot exhaustion must not stop Cursor model requests.
+      ...(Number.isFinite(reset) ? { resetsAt: new Date(reset).toISOString(), span: 604800 } : {}),
+    }]
+  } catch {
+    return []
+  }
+}
+
 // ---- models ----------------------------------------------------------------------
 //
 // The list is Cursor's model picker (AiService/AvailableModels, asked as the
@@ -2158,8 +2195,10 @@ export async function CursorAuthPlugin() {
         } catch (e) {
           return { error: e.message, windows: [], signIn: "kept" }
         }
-        const [u, plan] = await Promise.all([usage(tok, Object.keys(provider?.models ?? {})), planOf(tok)])
-        return { ...u, ...(plan ? { plan } : {}), signIn: "kept" }
+        const [u, plan, bot] = await Promise.all([usage(tok, Object.keys(provider?.models ?? {})), planOf(tok), botUsage(tok)])
+        // Put Bot before Total for magpie's three menu-bar rings.
+        const windows = [...u.windows.filter((w) => !w.aside), ...bot, ...u.windows.filter((w) => w.aside)]
+        return { ...u, windows, ...(plan ? { plan } : {}), signIn: "kept" }
       },
     },
     // the session the request is part of, for the conversation_id
